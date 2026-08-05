@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "modules": [
+    {
+      "module": "preview-producer",
+      "repository": "https://github.com/shirubasoft/aspire-modular-apphosts-preview-producer.git",
+      "contract": {
+        "packageId": "Shirubasoft.Aspire.ModularAppHosts.PreviewProducer.Contract",
+        "versionEnvironment": "PreviewContractVersion",
+        "sourceFallback": {
+          "enabled": true,
+          "project": "src/PreviewProducer.ModuleContract/PreviewProducer.ModuleContract.csproj"
+        },
+        "allowedPackProperties": [
+          "ModularAppHostsVersion"
+        ]
+      },
+      "images": [
+        {
+          "resource": "preview-producer-api",
+          "resourceKind": "container",
+          "repositories": [
+            "ghcr.io/shirubasoft/aspire-modular-apphosts-preview-producer/api"
+          ],
+          "required": true
+        },
+        {
+          "resource": "preview-producer-sidecar",
+          "resourceKind": "container",
+          "repositories": [
+            "docker.io/library/nginx"
+          ],
+          "required": true
+        }
+      ]
+    }
+  ]
+}

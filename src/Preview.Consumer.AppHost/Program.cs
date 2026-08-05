@@ -3,8 +3,8 @@ using PreviewProducer.ModuleContract;
 
 var builder = DistributedApplication.CreateBuilder(args);
 
-var previewManifest = builder.Configuration["ModulePreview:Manifest"]
-    ?? throw new InvalidOperationException("ModulePreview:Manifest is required.");
-await builder.ApplyModulePreviewManifestAsync(previewManifest);
+var previewResolution = builder.Configuration["ModulePreview:Resolution"]
+    ?? throw new InvalidOperationException("ModulePreview:Resolution is required.");
+await builder.ApplyModulePreviewResolutionAsync(previewResolution);
 await PreviewProducerModule.ImportModuleAsync(builder);
 await builder.Build().RunAsync();
