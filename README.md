@@ -24,7 +24,7 @@ The untrusted request never reaches the AppHost. The resolution records the exac
 hash and OCI digests that the consumer tool verified.
 
 The workflow currently pins library commit
-[`b8e3083fb95132c9ccbe4e6cc6a41aad0bfe44fb`](https://github.com/shirubasoft/aspire-modular-apphosts/commit/b8e3083fb95132c9ccbe4e6cc6a41aad0bfe44fb).
+[`c2a01306113ccf27a7489a82b143dd8d7cb1d02c`](https://github.com/shirubasoft/aspire-modular-apphosts/commit/c2a01306113ccf27a7489a82b143dd8d7cb1d02c).
 
 ## Trigger the E2E workflow
 

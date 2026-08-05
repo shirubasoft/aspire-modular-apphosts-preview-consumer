@@ -32,7 +32,7 @@ jobs:
     timeout-minutes: 20
     env:
       LIBRARY_REPOSITORY: shirubasoft/aspire-modular-apphosts
-      LIBRARY_COMMIT: b8e3083fb95132c9ccbe4e6cc6a41aad0bfe44fb
+      LIBRARY_COMMIT: c2a01306113ccf27a7489a82b143dd8d7cb1d02c
       TRUSTED_WORKFLOW_REF: refs/heads/codex/tool-owned-preview-materialization
 
     steps:
