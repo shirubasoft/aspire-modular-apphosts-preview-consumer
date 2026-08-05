@@ -32,7 +32,7 @@ jobs:
     timeout-minutes: 20
     env:
       LIBRARY_REPOSITORY: shirubasoft/aspire-modular-apphosts
-      LIBRARY_COMMIT: c2a01303438127fac08581f4e75c0c9a913d63aa
+      LIBRARY_COMMIT: 8aea5cd6fccd2b9e71dfb391f7f72ef79ea4262a
       TRUSTED_WORKFLOW_REF: refs/heads/codex/tool-owned-preview-materialization
 
     steps:
@@ -274,12 +274,23 @@ jobs:
         shell: bash
         run: |
           if command -v aspire > /dev/null 2>&1; then
-            aspire ps \
+            aspire describe preview-producer-api \
               --apphost src/Preview.Consumer.AppHost/Preview.Consumer.AppHost.csproj \
               --format Json \
-              --include-hidden \
               --non-interactive \
-              > diagnostics/aspire-ps.json 2> diagnostics/aspire-ps.stderr || true
+              > diagnostics/api-description-always.json \
+              2> diagnostics/api-description-always.stderr || true
+            aspire describe preview-producer-sidecar \
+              --apphost src/Preview.Consumer.AppHost/Preview.Consumer.AppHost.csproj \
+              --format Json \
+              --non-interactive \
+              > diagnostics/sidecar-description-always.json \
+              2> diagnostics/sidecar-description-always.stderr || true
+
+            mkdir -p diagnostics/aspire-cli-logs
+            if compgen -G "$HOME/.aspire/logs/*.log" > /dev/null; then
+              cp "$HOME"/.aspire/logs/*.log diagnostics/aspire-cli-logs/
+            fi
           fi
 
       - name: Stop preview AppHost
