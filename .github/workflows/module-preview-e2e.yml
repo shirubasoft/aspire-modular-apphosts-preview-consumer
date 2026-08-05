@@ -30,6 +30,9 @@ jobs:
     name: Validate and test producer preview
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    env:
+      LIBRARY_REPOSITORY: shirubasoft/aspire-modular-apphosts
+      LIBRARY_COMMIT: d770337a432eb29a4dc827ad19c59f1eba9e1a9c
 
     steps:
       - name: Check out trusted consumer
@@ -62,7 +65,7 @@ jobs:
             --arg repository "$EXPECTED_REPOSITORY" \
             --arg module "$EXPECTED_MODULE" '
               def commit_id:
-                type == "string" and test("^([0-9a-f]{40}|[0-9a-f]{64})$");
+                type == "string" and test("^([0-9A-Fa-f]{40}|[0-9A-Fa-f]{64})$");
               def optional_string:
                 . == null or type == "string";
               type == "object" and
@@ -74,6 +77,7 @@ jobs:
               (.producer.branch? | optional_string) and
               (.producer.baseRef? | optional_string) and
               (.producer.baseCommit? | . == null or commit_id) and
+              ((.producer.baseRef? == null) == (.producer.baseCommit? == null)) and
               (.modules | type == "array" and length == 1) and
               all(.modules[];
                 type == "object" and
@@ -82,7 +86,8 @@ jobs:
                 (.commit | commit_id) and
                 (.branch? | optional_string) and
                 (.baseRef? | optional_string) and
-                (.baseCommit? | . == null or commit_id)) and
+                (.baseCommit? | . == null or commit_id) and
+                ((.baseRef? == null) == (.baseCommit? == null))) and
               .modules[0].commit == .producer.commit
             ' "$input_path" > /dev/null; then
             echo "Manifest validation failed." >&2
@@ -90,6 +95,10 @@ jobs:
           fi
 
           jq -c . "$input_path" > diagnostics/validated-manifest.json
+
+          manifest_path="$RUNNER_TEMP/module-preview.json"
+          cp diagnostics/validated-manifest.json "$manifest_path"
+          echo "ModulePreview__Manifest=$manifest_path" >> "$GITHUB_ENV"
 
           if (( ${#INPUT_CORRELATION_ID} > 128 )) ||
              [[ "$INPUT_CORRELATION_ID" =~ [^A-Za-z0-9._:/-] ]]; then
@@ -131,6 +140,15 @@ jobs:
           dotnet tool install Aspire.Cli --tool-path "$cli_path" --version 13.4.6
           echo "$cli_path" >> "$GITHUB_PATH"
 
+      - name: Check out Modular AppHosts at requested commit
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: ${{ env.LIBRARY_REPOSITORY }}
+          ref: ${{ env.LIBRARY_COMMIT }}
+          path: modular-apphosts
+          fetch-depth: 1
+          persist-credentials: false
+
       - name: Check out producer at validated commit
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
@@ -140,27 +158,50 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
-      - name: Verify producer checkout
+      - name: Verify exact checkouts
         shell: bash
         env:
-          EXPECTED_COMMIT: ${{ steps.validate.outputs.producer_commit }}
+          EXPECTED_LIBRARY_COMMIT: ${{ env.LIBRARY_COMMIT }}
+          EXPECTED_PRODUCER_COMMIT: ${{ steps.validate.outputs.producer_commit }}
         run: |
           set -euo pipefail
-          actual_commit=$(git -C producer rev-parse HEAD)
-          if [[ "$actual_commit" != "$EXPECTED_COMMIT" ]]; then
-            echo "Producer checkout mismatch: expected $EXPECTED_COMMIT, got $actual_commit." >&2
+          actual_library_commit=$(git -C modular-apphosts rev-parse HEAD)
+          if [[ "$actual_library_commit" != "$EXPECTED_LIBRARY_COMMIT" ]]; then
+            echo "Library checkout mismatch: expected $EXPECTED_LIBRARY_COMMIT, got $actual_library_commit." >&2
+            exit 1
+          fi
+          actual_producer_commit=$(git -C producer rev-parse HEAD)
+          if [[ "$actual_producer_commit" != "$EXPECTED_PRODUCER_COMMIT" ]]; then
+            echo "Producer checkout mismatch: expected $EXPECTED_PRODUCER_COMMIT, got $actual_producer_commit." >&2
             exit 1
           fi
 
-      - name: Pack exact preview contract
+      - name: Pack exact library and preview contract
         id: pack
         shell: bash
         env:
-          PACKAGE_ID: Shirubasoft.Aspire.ModularAppHosts.PreviewProducer.Contract
+          LIBRARY_PACKAGE_ID: Shirubasoft.Aspire.ModularAppHosts
+          CONTRACT_PACKAGE_ID: Shirubasoft.Aspire.ModularAppHosts.PreviewProducer.Contract
         run: |
           set -euo pipefail
+          library_version="1.2.0-e2e.${GITHUB_RUN_ID}.${GITHUB_RUN_ATTEMPT}"
           preview_version="0.0.0-preview.${GITHUB_RUN_ID}.${GITHUB_RUN_ATTEMPT}"
           mkdir -p .preview-feed
+
+          dotnet restore \
+            modular-apphosts/src/Aspire.Hosting.ModularAppHosts/Aspire.Hosting.ModularAppHosts.csproj \
+            --nologo \
+            2>&1 | tee diagnostics/modular-apphosts-restore.log
+
+          dotnet pack \
+            modular-apphosts/src/Aspire.Hosting.ModularAppHosts/Aspire.Hosting.ModularAppHosts.csproj \
+            --configuration Release \
+            --no-restore \
+            --output .preview-feed \
+            -p:PackageVersion="$library_version" \
+            -p:Version="$library_version" \
+            --nologo \
+            2>&1 | tee diagnostics/modular-apphosts-pack.log
 
           dotnet restore \
             producer/src/PreviewProducer.ModuleContract/PreviewProducer.ModuleContract.csproj \
@@ -177,19 +218,27 @@ jobs:
             --nologo \
             2>&1 | tee diagnostics/producer-contract-pack.log
 
-          package_path=".preview-feed/${PACKAGE_ID}.${preview_version}.nupkg"
-          test -f "$package_path"
-          package_sha256=$(sha256sum "$package_path" | awk '{print $1}')
+          library_package_path=".preview-feed/${LIBRARY_PACKAGE_ID}.${library_version}.nupkg"
+          contract_package_path=".preview-feed/${CONTRACT_PACKAGE_ID}.${preview_version}.nupkg"
+          test -f "$library_package_path"
+          test -f "$contract_package_path"
+          library_package_sha256=$(sha256sum "$library_package_path" | awk '{print $1}')
+          contract_package_sha256=$(sha256sum "$contract_package_path" | awk '{print $1}')
 
+          echo "library_version=$library_version" >> "$GITHUB_OUTPUT"
+          echo "library_package_sha256=$library_package_sha256" >> "$GITHUB_OUTPUT"
           echo "preview_version=$preview_version" >> "$GITHUB_OUTPUT"
-          echo "package_sha256=$package_sha256" >> "$GITHUB_OUTPUT"
+          echo "contract_package_sha256=$contract_package_sha256" >> "$GITHUB_OUTPUT"
 
       - name: Record resolved preview provenance
         shell: bash
         env:
-          PACKAGE_ID: Shirubasoft.Aspire.ModularAppHosts.PreviewProducer.Contract
-          PACKAGE_VERSION: ${{ steps.pack.outputs.preview_version }}
-          PACKAGE_SHA256: ${{ steps.pack.outputs.package_sha256 }}
+          LIBRARY_PACKAGE_ID: Shirubasoft.Aspire.ModularAppHosts
+          LIBRARY_PACKAGE_VERSION: ${{ steps.pack.outputs.library_version }}
+          LIBRARY_PACKAGE_SHA256: ${{ steps.pack.outputs.library_package_sha256 }}
+          CONTRACT_PACKAGE_ID: Shirubasoft.Aspire.ModularAppHosts.PreviewProducer.Contract
+          CONTRACT_PACKAGE_VERSION: ${{ steps.pack.outputs.preview_version }}
+          CONTRACT_PACKAGE_SHA256: ${{ steps.pack.outputs.contract_package_sha256 }}
           PRODUCER_COMMIT: ${{ steps.validate.outputs.producer_commit }}
         run: |
           set -euo pipefail
@@ -197,19 +246,33 @@ jobs:
           jq -n \
             --arg consumerCommit "$consumer_commit" \
             --arg producerCommit "$PRODUCER_COMMIT" \
-            --arg packageId "$PACKAGE_ID" \
-            --arg packageVersion "$PACKAGE_VERSION" \
-            --arg packageSha256 "$PACKAGE_SHA256" \
+            --arg libraryRepository "$LIBRARY_REPOSITORY" \
+            --arg libraryCommit "$LIBRARY_COMMIT" \
+            --arg libraryPackageId "$LIBRARY_PACKAGE_ID" \
+            --arg libraryPackageVersion "$LIBRARY_PACKAGE_VERSION" \
+            --arg libraryPackageSha256 "$LIBRARY_PACKAGE_SHA256" \
+            --arg contractPackageId "$CONTRACT_PACKAGE_ID" \
+            --arg contractPackageVersion "$CONTRACT_PACKAGE_VERSION" \
+            --arg contractPackageSha256 "$CONTRACT_PACKAGE_SHA256" \
             --slurpfile manifest diagnostics/validated-manifest.json \
             --slurpfile request diagnostics/request-metadata.json '
               {
                 schemaVersion: 1,
                 consumer: {repository: env.GITHUB_REPOSITORY, commit: $consumerCommit},
                 producer: {repository: $manifest[0].producer.repository, commit: $producerCommit},
+                modularAppHosts: {
+                  repository: $libraryRepository,
+                  commit: $libraryCommit,
+                  package: {
+                    id: $libraryPackageId,
+                    version: $libraryPackageVersion,
+                    sha256: $libraryPackageSha256
+                  }
+                },
                 contractPackage: {
-                  id: $packageId,
-                  version: $packageVersion,
-                  sha256: $packageSha256
+                  id: $contractPackageId,
+                  version: $contractPackageVersion,
+                  sha256: $contractPackageSha256
                 },
                 request: {
                   manifest: $manifest[0],
@@ -222,11 +285,13 @@ jobs:
       - name: Restore consumer against exact preview package
         shell: bash
         env:
+          ModularAppHostsVersion: ${{ steps.pack.outputs.library_version }}
           PreviewContractVersion: ${{ steps.pack.outputs.preview_version }}
         run: |
           set -euo pipefail
           dotnet restore \
             src/Preview.Consumer.AppHost/Preview.Consumer.AppHost.csproj \
+            -p:ModularAppHostsVersion="$ModularAppHostsVersion" \
             -p:PreviewContractVersion="$PreviewContractVersion" \
             --no-cache \
             --nologo \
@@ -235,9 +300,8 @@ jobs:
       - name: Start preview AppHost
         shell: bash
         env:
+          ModularAppHostsVersion: ${{ steps.pack.outputs.library_version }}
           PreviewContractVersion: ${{ steps.pack.outputs.preview_version }}
-          Aspire__ModularAppHosts__Modules__preview-producer__Repository: https://github.com/shirubasoft/aspire-modular-apphosts-preview-producer.git
-          Aspire__ModularAppHosts__Modules__preview-producer__RepositoryRevision: ${{ steps.validate.outputs.producer_commit }}
         run: |
           set -euo pipefail
           aspire start \
@@ -248,9 +312,8 @@ jobs:
       - name: Wait for preview resources
         shell: bash
         env:
+          ModularAppHostsVersion: ${{ steps.pack.outputs.library_version }}
           PreviewContractVersion: ${{ steps.pack.outputs.preview_version }}
-          Aspire__ModularAppHosts__Modules__preview-producer__Repository: https://github.com/shirubasoft/aspire-modular-apphosts-preview-producer.git
-          Aspire__ModularAppHosts__Modules__preview-producer__RepositoryRevision: ${{ steps.validate.outputs.producer_commit }}
         run: |
           set -euo pipefail
           aspire wait preview-producer-api \
@@ -267,9 +330,8 @@ jobs:
       - name: Assert preview response
         shell: bash
         env:
+          ModularAppHostsVersion: ${{ steps.pack.outputs.library_version }}
           PreviewContractVersion: ${{ steps.pack.outputs.preview_version }}
-          Aspire__ModularAppHosts__Modules__preview-producer__Repository: https://github.com/shirubasoft/aspire-modular-apphosts-preview-producer.git
-          Aspire__ModularAppHosts__Modules__preview-producer__RepositoryRevision: ${{ steps.validate.outputs.producer_commit }}
         run: |
           set -euo pipefail
           aspire describe preview-producer-api \
@@ -292,9 +354,8 @@ jobs:
         if: always()
         shell: bash
         env:
+          ModularAppHostsVersion: ${{ steps.pack.outputs.library_version }}
           PreviewContractVersion: ${{ steps.pack.outputs.preview_version }}
-          Aspire__ModularAppHosts__Modules__preview-producer__Repository: https://github.com/shirubasoft/aspire-modular-apphosts-preview-producer.git
-          Aspire__ModularAppHosts__Modules__preview-producer__RepositoryRevision: ${{ steps.validate.outputs.producer_commit }}
         run: |
           if command -v aspire > /dev/null 2>&1; then
             aspire ps \
@@ -314,9 +375,8 @@ jobs:
         if: always()
         shell: bash
         env:
+          ModularAppHostsVersion: ${{ steps.pack.outputs.library_version }}
           PreviewContractVersion: ${{ steps.pack.outputs.preview_version }}
-          Aspire__ModularAppHosts__Modules__preview-producer__Repository: https://github.com/shirubasoft/aspire-modular-apphosts-preview-producer.git
-          Aspire__ModularAppHosts__Modules__preview-producer__RepositoryRevision: ${{ steps.validate.outputs.producer_commit }}
         run: |
           if command -v aspire > /dev/null 2>&1; then
             aspire stop \

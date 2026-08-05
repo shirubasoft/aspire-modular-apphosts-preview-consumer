@@ -5,11 +5,13 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <ModularAppHostsVersion Condition="'$(ModularAppHostsVersion)' == ''">0.0.0-local</ModularAppHostsVersion>
     <PreviewContractVersion Condition="'$(PreviewContractVersion)' == ''">0.0.0-local</PreviewContractVersion>
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Shirubasoft.Aspire.ModularAppHosts" Version="[1.1.0]" />
+    <PackageReference Include="Shirubasoft.Aspire.ModularAppHosts"
+                      Version="[$(ModularAppHostsVersion)]" />
     <PackageReference Include="Shirubasoft.Aspire.ModularAppHosts.PreviewProducer.Contract"
                       Version="[$(PreviewContractVersion)]" />
   </ItemGroup>
