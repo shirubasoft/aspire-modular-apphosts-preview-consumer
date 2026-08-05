@@ -33,7 +33,7 @@ The producer feature branch currently has this example manifest:
   "producer": {
     "repository": "https://github.com/shirubasoft/aspire-modular-apphosts-preview-producer.git",
     "commit": "df0260ead86cb6e3848cad6a0782308f2152d76c",
-    "branch": "feat/preview-sidecar",
+    "branch": "codex/preview-resource-change",
     "baseRef": "refs/heads/main",
     "baseCommit": "4ca008a6c8ecbe22f2c88ca8099f3b14c997b7c8",
     "dirty": false
@@ -43,7 +43,7 @@ The producer feature branch currently has this example manifest:
       "name": "preview-producer",
       "repository": "https://github.com/shirubasoft/aspire-modular-apphosts-preview-producer.git",
       "commit": "df0260ead86cb6e3848cad6a0782308f2152d76c",
-      "branch": "feat/preview-sidecar",
+      "branch": "codex/preview-resource-change",
       "baseRef": "refs/heads/main",
       "baseCommit": "4ca008a6c8ecbe22f2c88ca8099f3b14c997b7c8"
     }
