@@ -9,7 +9,7 @@ the producer already published.
 The fixture supports two contract modes:
 
 - An image-only request omits `contracts`. The consumer keeps its own exact baseline,
-  `Shirubasoft.Aspire.ModularAppHosts.PreviewProducer.Contract` version `2.0.0-preview.6.1`.
+  `Shirubasoft.Aspire.ModularAppHosts.PreviewProducer.Contract` version `2.0.0-preview.7.1`.
 - A published-contract request selects an exact version of that allowlisted package. The consumer
   downloads and hashes it from its policy-owned GitHub Packages source. Source fallback is disabled,
   so materialization cannot check out or pack producer source.
@@ -25,8 +25,9 @@ await PreviewProducerModule.ImportModuleAsync(builder);
 
 The workflow owns three independent trust boundaries:
 
-- It checks out an exact `aspire-modular-apphosts` commit, then packs the runtime and tool under
-  unique job-local versions. The producer cannot select this implementation.
+- It checks out an exact `aspire-modular-apphosts` commit, packs the runtime as the shared immutable
+  ABI version `1.2.0-preview.f54233a`, and packs the tool under a unique job-local version. The
+  producer cannot select this implementation.
 - It owns the allowed contract package ID, GitHub Packages source, image repositories, baseline
   version, package credentials, and whether a contract request is optional.
 - The producer selects only its clean pushed commit, an optional exact contract version, and exact
@@ -70,7 +71,7 @@ dotnet modular-apphosts preview produce \
 
 For an image-only preview, use a descriptor without `contract` and omit `--contract-version`. The
 generated manifest will contain no contract request, and Repo D will compile against its baseline
-`2.0.0-preview.6.1` package while applying the requested image digests at runtime.
+`2.0.0-preview.7.1` package while applying the requested image digests at runtime.
 
 Dispatch the reviewed consumer workflow and wait for its result:
 
@@ -154,7 +155,7 @@ dotnet nuget update source github-shirubasoft \
 ```
 
 Do not commit the resulting credentials. The AppHost defaults to baseline contract version
-`2.0.0-preview.6.1`; set `PreviewContractVersion` only when testing a materialized published request:
+`2.0.0-preview.7.1`; set `PreviewContractVersion` only when testing a materialized published request:
 
 ```bash
 export ModularAppHostsVersion=1.2.0.1

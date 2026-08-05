@@ -6,7 +6,7 @@
     <Nullable>enable</Nullable>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <ModularAppHostsVersion Condition="'$(ModularAppHostsVersion)' == ''">0.0.0-local</ModularAppHostsVersion>
-    <PreviewContractVersion Condition="'$(PreviewContractVersion)' == ''">2.0.0-preview.6.1</PreviewContractVersion>
+    <PreviewContractVersion Condition="'$(PreviewContractVersion)' == ''">2.0.0-preview.7.1</PreviewContractVersion>
   </PropertyGroup>
 
   <ItemGroup>

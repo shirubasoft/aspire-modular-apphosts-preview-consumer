@@ -34,7 +34,8 @@ jobs:
     env:
       LIBRARY_REPOSITORY: shirubasoft/aspire-modular-apphosts
       LIBRARY_COMMIT: f54233a36d4c2ffbe532533d0b1867faf1b42d89
-      PreviewContractVersion: 2.0.0-preview.6.1
+      LIBRARY_PACKAGE_VERSION: 1.2.0-preview.f54233a
+      PreviewContractVersion: 2.0.0-preview.7.1
       TRUSTED_WORKFLOW_REF: refs/heads/codex/tool-owned-preview-materialization
 
     steps:
@@ -86,7 +87,7 @@ jobs:
             exit 1
           fi
 
-          library_version="1.2.${GITHUB_RUN_NUMBER}.${GITHUB_RUN_ATTEMPT}"
+          library_version="$LIBRARY_PACKAGE_VERSION"
           tool_version="0.0.0-preview.${GITHUB_RUN_ID}.${GITHUB_RUN_ATTEMPT}"
 
           dotnet restore \
@@ -268,7 +269,7 @@ jobs:
 
           if jq -e '.contracts | length == 0' diagnostics/validated-manifest.json > /dev/null; then
             jq -e '.contracts | length == 0' "$resolution" > /dev/null
-            if [[ "$PreviewContractVersion" != "2.0.0-preview.6.1" ]]; then
+            if [[ "$PreviewContractVersion" != "2.0.0-preview.7.1" ]]; then
               echo "Image-only preview did not retain the consumer-owned baseline contract." >&2
               exit 1
             fi
