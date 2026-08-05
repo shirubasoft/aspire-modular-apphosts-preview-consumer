@@ -1,0 +1,5 @@
+**/bin/
+**/obj/
+.aspire/
+.preview-feed/
+diagnostics/

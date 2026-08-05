@@ -1,0 +1,335 @@
+name: Module preview E2E
+
+on:
+  workflow_dispatch:
+    inputs:
+      manifest_json:
+        description: Compact module preview manifest JSON
+        required: true
+        type: string
+      correlation_id:
+        description: Optional caller correlation identifier
+        required: false
+        default: ""
+        type: string
+      callback_metadata_json:
+        description: Optional opaque callback metadata (recorded only; never invoked)
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: module-preview-e2e-${{ github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  e2e:
+    name: Validate and test producer preview
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out trusted consumer
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: Validate manifest and request metadata
+        id: validate
+        shell: bash
+        env:
+          INPUT_MANIFEST_JSON: ${{ inputs.manifest_json }}
+          INPUT_CORRELATION_ID: ${{ inputs.correlation_id }}
+          INPUT_CALLBACK_METADATA_JSON: ${{ inputs.callback_metadata_json }}
+          EXPECTED_REPOSITORY: https://github.com/shirubasoft/aspire-modular-apphosts-preview-producer.git
+          EXPECTED_MODULE: preview-producer
+        run: |
+          set -euo pipefail
+          mkdir -p diagnostics
+
+          if [[ "$GITHUB_REF" != "refs/heads/main" ]]; then
+            echo "This trusted workflow must run from refs/heads/main." >&2
+            exit 1
+          fi
+
+          input_path="$RUNNER_TEMP/manifest.input.json"
+          printf '%s' "$INPUT_MANIFEST_JSON" > "$input_path"
+
+          if ! jq -e \
+            --arg repository "$EXPECTED_REPOSITORY" \
+            --arg module "$EXPECTED_MODULE" '
+              def commit_id:
+                type == "string" and test("^([0-9a-f]{40}|[0-9a-f]{64})$");
+              def optional_string:
+                . == null or type == "string";
+              type == "object" and
+              .schemaVersion == 1 and
+              (.producer | type == "object") and
+              .producer.repository == $repository and
+              .producer.dirty == false and
+              (.producer.commit | commit_id) and
+              (.producer.branch? | optional_string) and
+              (.producer.baseRef? | optional_string) and
+              (.producer.baseCommit? | . == null or commit_id) and
+              (.modules | type == "array" and length == 1) and
+              all(.modules[];
+                type == "object" and
+                .name == $module and
+                .repository == $repository and
+                (.commit | commit_id) and
+                (.branch? | optional_string) and
+                (.baseRef? | optional_string) and
+                (.baseCommit? | . == null or commit_id)) and
+              .modules[0].commit == .producer.commit
+            ' "$input_path" > /dev/null; then
+            echo "Manifest validation failed." >&2
+            exit 1
+          fi
+
+          jq -c . "$input_path" > diagnostics/validated-manifest.json
+
+          if (( ${#INPUT_CORRELATION_ID} > 128 )) ||
+             [[ "$INPUT_CORRELATION_ID" =~ [^A-Za-z0-9._:/-] ]]; then
+            echo "correlation_id must be at most 128 safe characters." >&2
+            exit 1
+          fi
+
+          callback_path="$RUNNER_TEMP/callback-metadata.json"
+          if [[ -z "$INPUT_CALLBACK_METADATA_JSON" ]]; then
+            printf 'null\n' > "$callback_path"
+          else
+            if (( ${#INPUT_CALLBACK_METADATA_JSON} > 4096 )); then
+              echo "callback_metadata_json must be at most 4096 characters." >&2
+              exit 1
+            fi
+            printf '%s' "$INPUT_CALLBACK_METADATA_JSON" > "$callback_path"
+            jq -e 'type == "object"' "$callback_path" > /dev/null
+          fi
+
+          jq -n \
+            --arg correlationId "$INPUT_CORRELATION_ID" \
+            --slurpfile callback "$callback_path" \
+            '{correlationId: ($correlationId | select(length > 0) // null), callback: $callback[0]}' \
+            > diagnostics/request-metadata.json
+
+          producer_commit=$(jq -r '.producer.commit' diagnostics/validated-manifest.json)
+          echo "producer_commit=$producer_commit" >> "$GITHUB_OUTPUT"
+
+      - name: Set up .NET 10
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          dotnet-version: 10.0.301
+
+      - name: Install pinned Aspire CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          cli_path="$RUNNER_TEMP/aspire-cli"
+          dotnet tool install Aspire.Cli --tool-path "$cli_path" --version 13.4.6
+          echo "$cli_path" >> "$GITHUB_PATH"
+
+      - name: Check out producer at validated commit
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: shirubasoft/aspire-modular-apphosts-preview-producer
+          ref: ${{ steps.validate.outputs.producer_commit }}
+          path: producer
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify producer checkout
+        shell: bash
+        env:
+          EXPECTED_COMMIT: ${{ steps.validate.outputs.producer_commit }}
+        run: |
+          set -euo pipefail
+          actual_commit=$(git -C producer rev-parse HEAD)
+          if [[ "$actual_commit" != "$EXPECTED_COMMIT" ]]; then
+            echo "Producer checkout mismatch: expected $EXPECTED_COMMIT, got $actual_commit." >&2
+            exit 1
+          fi
+
+      - name: Pack exact preview contract
+        id: pack
+        shell: bash
+        env:
+          PACKAGE_ID: Shirubasoft.Aspire.ModularAppHosts.PreviewProducer.Contract
+        run: |
+          set -euo pipefail
+          preview_version="0.0.0-preview.${GITHUB_RUN_ID}.${GITHUB_RUN_ATTEMPT}"
+          mkdir -p .preview-feed
+
+          dotnet restore \
+            producer/src/PreviewProducer.ModuleContract/PreviewProducer.ModuleContract.csproj \
+            --nologo \
+            2>&1 | tee diagnostics/producer-contract-restore.log
+
+          dotnet pack \
+            producer/src/PreviewProducer.ModuleContract/PreviewProducer.ModuleContract.csproj \
+            --configuration Release \
+            --no-restore \
+            --output .preview-feed \
+            -p:PackageVersion="$preview_version" \
+            -p:Version="$preview_version" \
+            --nologo \
+            2>&1 | tee diagnostics/producer-contract-pack.log
+
+          package_path=".preview-feed/${PACKAGE_ID}.${preview_version}.nupkg"
+          test -f "$package_path"
+          package_sha256=$(sha256sum "$package_path" | awk '{print $1}')
+
+          echo "preview_version=$preview_version" >> "$GITHUB_OUTPUT"
+          echo "package_sha256=$package_sha256" >> "$GITHUB_OUTPUT"
+
+      - name: Record resolved preview provenance
+        shell: bash
+        env:
+          PACKAGE_ID: Shirubasoft.Aspire.ModularAppHosts.PreviewProducer.Contract
+          PACKAGE_VERSION: ${{ steps.pack.outputs.preview_version }}
+          PACKAGE_SHA256: ${{ steps.pack.outputs.package_sha256 }}
+          PRODUCER_COMMIT: ${{ steps.validate.outputs.producer_commit }}
+        run: |
+          set -euo pipefail
+          consumer_commit=$(git rev-parse HEAD)
+          jq -n \
+            --arg consumerCommit "$consumer_commit" \
+            --arg producerCommit "$PRODUCER_COMMIT" \
+            --arg packageId "$PACKAGE_ID" \
+            --arg packageVersion "$PACKAGE_VERSION" \
+            --arg packageSha256 "$PACKAGE_SHA256" \
+            --slurpfile manifest diagnostics/validated-manifest.json \
+            --slurpfile request diagnostics/request-metadata.json '
+              {
+                schemaVersion: 1,
+                consumer: {repository: env.GITHUB_REPOSITORY, commit: $consumerCommit},
+                producer: {repository: $manifest[0].producer.repository, commit: $producerCommit},
+                contractPackage: {
+                  id: $packageId,
+                  version: $packageVersion,
+                  sha256: $packageSha256
+                },
+                request: {
+                  manifest: $manifest[0],
+                  correlationId: $request[0].correlationId,
+                  callback: $request[0].callback
+                }
+              }
+            ' > diagnostics/resolved-preview.json
+
+      - name: Restore consumer against exact preview package
+        shell: bash
+        env:
+          PreviewContractVersion: ${{ steps.pack.outputs.preview_version }}
+        run: |
+          set -euo pipefail
+          dotnet restore \
+            src/Preview.Consumer.AppHost/Preview.Consumer.AppHost.csproj \
+            -p:PreviewContractVersion="$PreviewContractVersion" \
+            --no-cache \
+            --nologo \
+            2>&1 | tee diagnostics/consumer-restore.log
+
+      - name: Start preview AppHost
+        shell: bash
+        env:
+          PreviewContractVersion: ${{ steps.pack.outputs.preview_version }}
+          Aspire__ModularAppHosts__Modules__preview-producer__Repository: https://github.com/shirubasoft/aspire-modular-apphosts-preview-producer.git
+          Aspire__ModularAppHosts__Modules__preview-producer__RepositoryRevision: ${{ steps.validate.outputs.producer_commit }}
+        run: |
+          set -euo pipefail
+          aspire start \
+            --apphost src/Preview.Consumer.AppHost/Preview.Consumer.AppHost.csproj \
+            --non-interactive \
+            2>&1 | tee diagnostics/aspire-start.log
+
+      - name: Wait for preview resources
+        shell: bash
+        env:
+          PreviewContractVersion: ${{ steps.pack.outputs.preview_version }}
+          Aspire__ModularAppHosts__Modules__preview-producer__Repository: https://github.com/shirubasoft/aspire-modular-apphosts-preview-producer.git
+          Aspire__ModularAppHosts__Modules__preview-producer__RepositoryRevision: ${{ steps.validate.outputs.producer_commit }}
+        run: |
+          set -euo pipefail
+          aspire wait preview-producer-api \
+            --apphost src/Preview.Consumer.AppHost/Preview.Consumer.AppHost.csproj \
+            --timeout 180 \
+            --non-interactive \
+            2>&1 | tee diagnostics/aspire-wait-api.log
+          aspire wait preview-producer-sidecar \
+            --apphost src/Preview.Consumer.AppHost/Preview.Consumer.AppHost.csproj \
+            --timeout 180 \
+            --non-interactive \
+            2>&1 | tee diagnostics/aspire-wait-sidecar.log
+
+      - name: Assert preview response
+        shell: bash
+        env:
+          PreviewContractVersion: ${{ steps.pack.outputs.preview_version }}
+          Aspire__ModularAppHosts__Modules__preview-producer__Repository: https://github.com/shirubasoft/aspire-modular-apphosts-preview-producer.git
+          Aspire__ModularAppHosts__Modules__preview-producer__RepositoryRevision: ${{ steps.validate.outputs.producer_commit }}
+        run: |
+          set -euo pipefail
+          aspire describe preview-producer-api \
+            --apphost src/Preview.Consumer.AppHost/Preview.Consumer.AppHost.csproj \
+            --format Json \
+            --non-interactive \
+            > diagnostics/api-description.json
+
+          api_url=$(jq -r '[.resources[].urls[] | select(.name == "http") | .url][0] // empty' diagnostics/api-description.json)
+          test -n "$api_url"
+          curl --fail --show-error --silent "${api_url%/}/" > diagnostics/preview-response.txt
+
+          actual_response=$(tr -d '\r\n' < diagnostics/preview-response.txt)
+          if [[ "$actual_response" != "preview-from-feature-branch" ]]; then
+            echo "Unexpected preview response: $actual_response" >&2
+            exit 1
+          fi
+
+      - name: Collect Aspire diagnostics
+        if: always()
+        shell: bash
+        env:
+          PreviewContractVersion: ${{ steps.pack.outputs.preview_version }}
+          Aspire__ModularAppHosts__Modules__preview-producer__Repository: https://github.com/shirubasoft/aspire-modular-apphosts-preview-producer.git
+          Aspire__ModularAppHosts__Modules__preview-producer__RepositoryRevision: ${{ steps.validate.outputs.producer_commit }}
+        run: |
+          if command -v aspire > /dev/null 2>&1; then
+            aspire ps \
+              --apphost src/Preview.Consumer.AppHost/Preview.Consumer.AppHost.csproj \
+              --format Json \
+              --include-hidden \
+              --non-interactive \
+              > diagnostics/aspire-ps.json 2> diagnostics/aspire-ps.stderr || true
+            aspire describe preview-producer-sidecar \
+              --apphost src/Preview.Consumer.AppHost/Preview.Consumer.AppHost.csproj \
+              --format Json \
+              --non-interactive \
+              > diagnostics/sidecar-description.json 2> diagnostics/sidecar-description.stderr || true
+          fi
+
+      - name: Stop preview AppHost
+        if: always()
+        shell: bash
+        env:
+          PreviewContractVersion: ${{ steps.pack.outputs.preview_version }}
+          Aspire__ModularAppHosts__Modules__preview-producer__Repository: https://github.com/shirubasoft/aspire-modular-apphosts-preview-producer.git
+          Aspire__ModularAppHosts__Modules__preview-producer__RepositoryRevision: ${{ steps.validate.outputs.producer_commit }}
+        run: |
+          if command -v aspire > /dev/null 2>&1; then
+            aspire stop \
+              --apphost src/Preview.Consumer.AppHost/Preview.Consumer.AppHost.csproj \
+              --non-interactive \
+              2>&1 | tee diagnostics/aspire-stop.log || true
+          fi
+
+      - name: Upload validated request and diagnostics
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: module-preview-e2e-${{ github.run_id }}-${{ github.run_attempt }}
+          path: diagnostics/
+          if-no-files-found: warn
+          retention-days: 7
