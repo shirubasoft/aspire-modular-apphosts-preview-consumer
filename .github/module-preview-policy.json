@@ -7,13 +7,13 @@
       "contract": {
         "packageId": "Shirubasoft.Aspire.ModularAppHosts.PreviewProducer.Contract",
         "versionEnvironment": "PreviewContractVersion",
-        "sourceFallback": {
-          "enabled": true,
-          "project": "src/PreviewProducer.ModuleContract/PreviewProducer.ModuleContract.csproj"
+        "required": false,
+        "published": {
+          "source": "https://nuget.pkg.github.com/shirubasoft/index.json"
         },
-        "allowedPackProperties": [
-          "ModularAppHostsVersion"
-        ]
+        "sourceFallback": {
+          "enabled": false
+        }
       },
       "images": [
         {

@@ -20,6 +20,7 @@ on:
 
 permissions:
   contents: read
+  packages: read
 
 concurrency:
   group: module-preview-e2e-${{ github.run_id }}
@@ -32,7 +33,8 @@ jobs:
     timeout-minutes: 20
     env:
       LIBRARY_REPOSITORY: shirubasoft/aspire-modular-apphosts
-      LIBRARY_COMMIT: 8aea5cd6fccd2b9e71dfb391f7f72ef79ea4262a
+      LIBRARY_COMMIT: f54233a36d4c2ffbe532533d0b1867faf1b42d89
+      PreviewContractVersion: 2.0.0-preview.6.1
       TRUSTED_WORKFLOW_REF: refs/heads/codex/tool-owned-preview-materialization
 
     steps:
@@ -185,22 +187,128 @@ jobs:
             --output diagnostics/validated-manifest.json \
             2>&1 | tee diagnostics/preview-verify.log
 
+      - name: Configure trusted GitHub Packages source
+        shell: bash
+        env:
+          NUGET_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          dotnet nuget update source github-shirubasoft \
+            --configfile "$GITHUB_WORKSPACE/nuget.config" \
+            --username "$GITHUB_ACTOR" \
+            --password "$NUGET_GITHUB_TOKEN" \
+            --store-password-in-clear-text
+
       - name: Materialize policy-approved preview
         shell: bash
         run: |
           set -euo pipefail
-          dotnet modular-apphosts preview materialize \
-            --manifest diagnostics/validated-manifest.json \
-            --policy .github/module-preview-policy.json \
-            --work-directory "$RUNNER_TEMP/module-preview-work" \
-            --package-feed "$GITHUB_WORKSPACE/.preview-feed" \
-            --resolution "$GITHUB_WORKSPACE/diagnostics/resolved-preview.json" \
-            --consumer-repository "https://github.com/${GITHUB_REPOSITORY}.git" \
-            --consumer-commit "$GITHUB_SHA" \
-            --nuget-config "$GITHUB_WORKSPACE/nuget.config" \
-            --property ModularAppHostsVersion="$ModularAppHostsVersion" \
-            --github-env "$GITHUB_ENV" \
-            2>&1 | tee diagnostics/preview-materialize.log
+          guard_directory="$RUNNER_TEMP/module-preview-command-guards"
+          mkdir -p "$guard_directory"
+          git_guard="$guard_directory/unexpected-git"
+          dotnet_guard="$guard_directory/guarded-dotnet"
+          printf '%s\n' \
+            '#!/usr/bin/env bash' \
+            'echo "Producer Git checkout is forbidden for this policy." >&2' \
+            'exit 97' \
+            > "$git_guard"
+          printf '%s\n' \
+            '#!/usr/bin/env bash' \
+            'set -euo pipefail' \
+            'if [[ "${1:-}" == "pack" ]]; then' \
+            '  echo "Producer contract packing is forbidden for this policy." >&2' \
+            '  exit 97' \
+            'fi' \
+            'exec dotnet "$@"' \
+            > "$dotnet_guard"
+          chmod +x "$git_guard" "$dotnet_guard"
+
+          common_arguments=(
+            --manifest diagnostics/validated-manifest.json
+            --policy .github/module-preview-policy.json
+            --work-directory "$RUNNER_TEMP/module-preview-work"
+            --resolution "$GITHUB_WORKSPACE/diagnostics/resolved-preview.json"
+            --consumer-repository "https://github.com/${GITHUB_REPOSITORY}.git"
+            --consumer-commit "$GITHUB_SHA"
+            --github-env "$GITHUB_ENV"
+            --git-executable "$git_guard"
+            --dotnet-executable "$dotnet_guard"
+          )
+
+          if jq -e '.contracts | length == 0' diagnostics/validated-manifest.json > /dev/null; then
+            dotnet modular-apphosts preview materialize \
+              "${common_arguments[@]}" \
+              2>&1 | tee diagnostics/preview-materialize.log
+          elif jq -e '.contracts | length == 1' diagnostics/validated-manifest.json > /dev/null; then
+            dotnet modular-apphosts preview materialize \
+              "${common_arguments[@]}" \
+              --package-feed "$GITHUB_WORKSPACE/.preview-feed" \
+              --nuget-config "$GITHUB_WORKSPACE/nuget.config" \
+              2>&1 | tee diagnostics/preview-materialize.log
+          else
+            echo "This fixture accepts at most one contract request." >&2
+            exit 1
+          fi
+
+      - name: Assert trusted preview resolution
+        shell: bash
+        run: |
+          set -euo pipefail
+          work_directory="$RUNNER_TEMP/module-preview-work"
+          resolution="$GITHUB_WORKSPACE/diagnostics/resolved-preview.json"
+
+          if find "$work_directory" -type d -name .git -print -quit | grep -q .; then
+            echo "Materialization unexpectedly created a producer Git checkout." >&2
+            exit 1
+          fi
+          if grep -Fq 'materializing contract ' diagnostics/preview-materialize.log; then
+            echo "Materialization unexpectedly used the source fallback." >&2
+            exit 1
+          fi
+
+          if jq -e '.contracts | length == 0' diagnostics/validated-manifest.json > /dev/null; then
+            jq -e '.contracts | length == 0' "$resolution" > /dev/null
+            if [[ "$PreviewContractVersion" != "2.0.0-preview.6.1" ]]; then
+              echo "Image-only preview did not retain the consumer-owned baseline contract." >&2
+              exit 1
+            fi
+          else
+            jq -e \
+              --slurpfile manifest diagnostics/validated-manifest.json \
+              --arg source 'https://nuget.pkg.github.com/shirubasoft/index.json' \
+              '(.contracts | length) == 1 and
+               .contracts[0].module == $manifest[0].contracts[0].module and
+               .contracts[0].packageId == $manifest[0].contracts[0].packageId and
+               .contracts[0].version == $manifest[0].contracts[0].version and
+               .contracts[0].source == $source and
+               (.contracts[0].sha256 | test("^[0-9a-f]{64}$")) and
+               (.contracts[0].packagePath | type == "string")' \
+              "$resolution" > /dev/null
+            jq -e \
+              --arg actualVersion "$PreviewContractVersion" \
+              '.contracts[0].version == $actualVersion' \
+              diagnostics/validated-manifest.json > /dev/null
+
+            mapfile -t contract_packages < <(
+              find "$GITHUB_WORKSPACE/.preview-feed" \
+                -maxdepth 1 \
+                -type f \
+                -iname 'shirubasoft.aspire.modularapphosts.previewproducer.contract.*.nupkg' \
+                -print
+            )
+            if (( ${#contract_packages[@]} != 1 )); then
+              echo "Expected exactly one materialized preview contract package." >&2
+              exit 1
+            fi
+            package_path=$(realpath "${contract_packages[0]}")
+            package_sha256=$(sha256sum "$package_path" | awk '{print $1}')
+            jq -e \
+              --arg packagePath "$package_path" \
+              --arg packageSha256 "$package_sha256" \
+              '.contracts[0].packagePath == $packagePath and
+               .contracts[0].sha256 == $packageSha256' \
+              "$resolution" > /dev/null
+          fi
 
       - name: Restore consumer against materialized packages
         shell: bash
