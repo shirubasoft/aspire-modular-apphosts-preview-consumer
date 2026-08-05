@@ -207,6 +207,7 @@ jobs:
 
           dotnet restore \
             producer/src/PreviewProducer.ModuleContract/PreviewProducer.ModuleContract.csproj \
+            -p:ModularAppHostsVersion="$library_version" \
             --nologo \
             2>&1 | tee diagnostics/producer-contract-restore.log
 
@@ -215,6 +216,7 @@ jobs:
             --configuration Release \
             --no-restore \
             --output .preview-feed \
+            -p:ModularAppHostsVersion="$library_version" \
             -p:PackageVersion="$preview_version" \
             -p:Version="$preview_version" \
             --nologo \
