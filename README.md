@@ -4,7 +4,8 @@
 > This repository is archived. It was a fixture for the cross-repository module preview sample of
 > `aspire-modular-apphosts`, whose packages continue as the
 > [Multirepo extension](https://github.com/shirubasoft/aspire-extensions/tree/main/extensions/Shirubasoft.Aspire.Extensions.Multirepo)
-> in shirubasoft/aspire-extensions.
+> in shirubasoft/aspire-extensions. The module-preview feature that this fixture exercised was
+> removed from `aspire-modular-apphosts` before the migration and is not available in Multirepo.
 
 This repository is the trusted E2E consumer (Repo D) for the cross-repository module preview
 sample. Its reviewed workflow verifies an immutable producer request, materializes only artifacts
